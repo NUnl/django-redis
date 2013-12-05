@@ -47,7 +47,13 @@ class HashRing(object):
         _hash = hashlib.sha256(key.encode('utf-8')).hexdigest()
         idx = bisect.bisect(self.sorted_keys, _hash)
         idx = min(idx, (self.replicas * len(self.nodes))-1)
-        return (self.ring[self.sorted_keys[idx]], idx)
+        
+        # this is NOT a proper fix for issue #48. It suppresses IndexError (occuring
+        # having 2 shards and an idx of 256) by returning (None, None) which is a valid response
+        try:
+            return (self.ring[self.sorted_keys[idx]], idx)
+        except IndexError:
+            return (None, None)
 
     def iter_nodes(self, key):
         if len(self.ring) == 0: yield None, None
