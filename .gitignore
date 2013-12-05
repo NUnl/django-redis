@@ -16,3 +16,4 @@ versiontools*
 build*
 dist*
 *.swp
+venv
