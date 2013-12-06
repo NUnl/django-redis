@@ -5,6 +5,8 @@ from __future__ import absolute_import, unicode_literals
 import bisect
 import hashlib
 
+import logging
+logger = logging.getLogger(__name__)
 
 class HashRing(object):
     nodes = []
@@ -53,6 +55,8 @@ class HashRing(object):
         try:
             return (self.ring[self.sorted_keys[idx]], idx)
         except IndexError:
+            logger.warning('Suppressed IndexError when fetching idx {0} from self.sorted_keys with length {1}'.format(
+                idx, len(self.sorted_keys)), exc_info=True)
             return (None, None)
 
     def iter_nodes(self, key):
