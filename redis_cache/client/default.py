@@ -2,7 +2,12 @@
 
 from __future__ import absolute_import, unicode_literals
 
-from django.core.exceptions import ImproperlyConfigured
+try:
+    import cPickle as pickle
+except ImportError:
+    import pickle
+
+import random
 
 try:
     from django.utils.encoding import smart_bytes
@@ -10,25 +15,17 @@ except ImportError:
     from django.utils.encoding import smart_str as smart_bytes
 
 from django.utils.datastructures import SortedDict
-from django.utils import importlib
+from django.core.exceptions import ImproperlyConfigured
 from django.conf import settings
-
-try:
-    import cPickle as pickle
-except ImportError:
-    import pickle
-
-from collections import defaultdict
-import functools
-import re
 
 from redis import Redis
 from redis.exceptions import ConnectionError, ResponseError
-from redis.connection import DefaultParser
-from redis.connection import UnixDomainSocketConnection, Connection
+from redis.connection import (Connection,
+                              DefaultParser,
+                              UnixDomainSocketConnection)
 
 from ..util import CacheKey, load_class, integer_types
-from ..exceptions import ConnectionInterrumped
+from ..exceptions import ConnectionInterrupted
 from ..pool import get_or_create_connection_pool
 
 
@@ -42,20 +39,32 @@ class DefaultClient(object):
         if not self._server:
             raise ImproperlyConfigured("Missing connections string")
 
+        if not isinstance(self._server, (list, tuple, set)):
+            self._server = self._server.split(",")
+
+        self._clients = [None] * len(self._server)
         self._options = params.get('OPTIONS', {})
+
         self.setup_pickle_version()
+
+        self._pool_cls = self._options.get(
+            'CONNECTION_POOL_CLASS', 'redis.connection.ConnectionPool')
+        self._pool_cls = load_class(self._pool_cls)
+        self._pool_cls_kwargs = self._options.get('CONNECTION_POOL_KWARGS', {})
 
     def __contains__(self, key):
         return self.has_key(key)
 
-    @property
-    def client(self):
-        if hasattr(self, "_client"):
-            return self._client
+    def get_client(self, write=True):
+        if write or len(self._server) == 1:
+            index = 0
+        else:
+            index = random.randint(1, len(self._server)-1)
 
-        _client = self.connect()
-        self._client = _client
-        return _client
+        if self._clients[index] is None:
+            self._clients[index] = self.connect(index)
+
+        return self._clients[index]
 
     @property
     def parser_class(self):
@@ -71,7 +80,7 @@ class DefaultClient(object):
         """
         try:
             host, port, db = constring.split(":")
-            port = int(port) if host != "unix" else port
+            port = port if host == "unix" else int(port)
             db = int(db)
             return host, port, db
         except (ValueError, TypeError):
@@ -92,15 +101,18 @@ class DefaultClient(object):
             kwargs.update({'path': port, 'connection_class': UnixDomainSocketConnection})
         else:
             kwargs.update({'host': host, 'port': port, 'connection_class': Connection})
+
         if 'SOCKET_TIMEOUT' in self._options:
             kwargs.update({'socket_timeout': int(self._options['SOCKET_TIMEOUT'])})
 
-        connection_pool = get_or_create_connection_pool(**kwargs)
+        kwargs.update(self._pool_cls_kwargs)
+
+        connection_pool = get_or_create_connection_pool(self._pool_cls, **kwargs)
         connection = Redis(connection_pool=connection_pool)
         return connection
 
-    def connect(self):
-        host, port, db = self.parse_connection_string(self._server)
+    def connect(self, index=0):
+        host, port, db = self.parse_connection_string(self._server[index])
         connection = self._connect(host, port, db)
         return connection
 
@@ -118,7 +130,7 @@ class DefaultClient(object):
         """
 
         if not client:
-            client = self.client
+            client = self.get_client(write=True)
 
         key = self.make_key(key, version=version)
         value = self.pickle(value)
@@ -137,7 +149,7 @@ class DefaultClient(object):
                     return client.setex(key, value, int(timeout))
                 return client.set(key, value)
         except ConnectionError:
-            raise ConnectionInterrumped(connection=client)
+            raise ConnectionInterrupted(connection=client)
 
     def incr_version(self, key, delta=1, version=None, client=None):
         """
@@ -146,7 +158,7 @@ class DefaultClient(object):
         """
 
         if client is None:
-            client = self.client
+            client = self.get_client(write=True)
 
         if version is None:
             version = self._backend.version
@@ -157,7 +169,7 @@ class DefaultClient(object):
         try:
             ttl = client.ttl(old_key)
         except ConnectionError:
-            raise ConnectionInterrumped(connection=client)
+            raise ConnectionInterrupted(connection=client)
 
         if value is None:
             raise ValueError("Key '%s' not found" % key)
@@ -186,14 +198,14 @@ class DefaultClient(object):
         Returns unpickled value if key is found, the default if not.
         """
         if client is None:
-            client = self.client
+            client = self.get_client(write=False)
 
         key = self.make_key(key, version=version)
 
         try:
             value = client.get(key)
         except ConnectionError:
-            raise ConnectionInterrumped(connection=client)
+            raise ConnectionInterrupted(connection=client)
 
         if value is None:
             return default
@@ -205,12 +217,12 @@ class DefaultClient(object):
         Remove a key from the cache.
         """
         if client is None:
-            client = self.client
+            client = self.get_client(write=True)
 
         try:
             client.delete(self.make_key(key, version=version))
         except ConnectionError:
-            raise ConnectionInterrumped(connection=client)
+            raise ConnectionInterrupted(connection=client)
 
     def delete_pattern(self, pattern, version=None, client=None):
         """
@@ -218,7 +230,7 @@ class DefaultClient(object):
         """
 
         if client is None:
-            client = self.client
+            client = self.get_client(write=True)
 
         pattern = self.make_key(pattern, version=version)
         try:
@@ -227,7 +239,7 @@ class DefaultClient(object):
             if keys:
                 client.delete(*keys)
         except ConnectionError:
-            raise ConnectionInterrumped(connection=client)
+            raise ConnectionInterrupted(connection=client)
 
     def delete_many(self, keys, version=None, client=None):
         """
@@ -235,27 +247,28 @@ class DefaultClient(object):
         """
 
         if client is None:
-            client = self.client
+            client = self.get_client(write=True)
 
         if not keys:
             return
 
-        keys = map(lambda key: self.make_key(key, version=version), keys)
+        keys = [self.make_key(k, version=version) for k in keys]
         try:
             client.delete(*keys)
         except ConnectionError:
-            raise ConnectionInterrumped(connection=client)
+            raise ConnectionInterrupted(connection=client)
 
     def clear(self, client=None):
         """
         Flush all cache keys.
         """
         if client is None:
-            client = self.client
+            client = self.get_client(write=True)
 
         client.flushdb()
 
-    def unpickle(self, value):
+    @staticmethod
+    def unpickle(value):
         """
         Unpickles the given value.
         """
@@ -282,20 +295,20 @@ class DefaultClient(object):
         """
 
         if client is None:
-            client = self.client
+            client = self.get_client(write=False)
 
         if not keys:
             return {}
 
         recovered_data = SortedDict()
 
-        new_keys = list(map(lambda key: self.make_key(key, version=version), keys))
+        new_keys = [self.make_key(k, version=version) for k in keys]
         map_keys = dict(zip(new_keys, keys))
 
         try:
             results = client.mget(*new_keys)
         except ConnectionError:
-            raise ConnectionInterrumped(connection=client)
+            raise ConnectionInterrupted(connection=client)
 
         for key, value in zip(new_keys, results):
             if value is None:
@@ -312,7 +325,7 @@ class DefaultClient(object):
         the default cache timeout will be used.
         """
         if client is None:
-            client = self.client
+            client = self.get_client(write=True)
 
         try:
             pipeline = client.pipeline()
@@ -320,11 +333,11 @@ class DefaultClient(object):
                 self.set(key, value, timeout, version=version, client=pipeline)
             pipeline.execute()
         except ConnectionError:
-            raise ConnectionInterrumped(connection=client)
+            raise ConnectionInterrupted(connection=client)
 
     def _incr(self, key, delta=1, version=None, client=None):
         if client is None:
-            client = self.client
+            client = self.get_client(write=True)
 
         key = self.make_key(key, version=version)
 
@@ -346,7 +359,7 @@ class DefaultClient(object):
                 self.set(key, value, version=version, timeout=timeout,
                          client=client)
         except ConnectionError:
-            raise ConnectionInterrumped(connection=client)
+            raise ConnectionInterrupted(connection=client)
 
         return value
 
@@ -362,7 +375,7 @@ class DefaultClient(object):
         Decreace delta to value in the cache. If the key does not exist, raise a
         ValueError exception.
         """
-        return self._incr(key=key, delta=delta * -1, version=version,
+        return self._incr(key=key, delta=-delta, version=version,
                           client=client)
 
     def has_key(self, key, version=None, client=None):
@@ -371,35 +384,32 @@ class DefaultClient(object):
         """
 
         if client is None:
-            client = self.client
+            client = self.get_client(write=False)
 
         key = self.make_key(key, version=version)
         try:
             return client.exists(key)
         except ConnectionError:
-            raise ConnectionInterrumped(connection=client)
+            raise ConnectionInterrupted(connection=client)
 
-    # Other not default and not standar methods.
     def keys(self, search, client=None):
         if client is None:
-            client = self.client
+            client = self.get_client(write=False)
 
         pattern = self.make_key(search)
         try:
-            encoding_map = map(lambda x:  x.decode('utf-8'), client.keys(pattern))
-            return list(map(lambda x: x.split(":", 2)[2], encoding_map))
+            encoding_map = [k.decode('utf-8') for k in client.keys(pattern)]
+            return [k.split(":", 2)[2] for k in encoding_map]
         except ConnectionError:
-            raise ConnectionInterrumped(connection=client)
+            raise ConnectionInterrupted(connection=client)
 
     def make_key(self, key, version=None):
-        if not isinstance(key, CacheKey):
-            key = CacheKey(self._backend.make_key(key, version))
-        return key
+        if isinstance(key, CacheKey):
+            return key
+        return CacheKey(self._backend.make_key(key, version))
 
     def close(self, **kwargs):
         if getattr(settings, "DJANGO_REDIS_CLOSE_CONNECTION", False):
             for c in self.client.connection_pool._available_connections:
                 c.disconnect()
             del self._client
-
-

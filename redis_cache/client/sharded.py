@@ -2,36 +2,15 @@
 
 from __future__ import absolute_import, unicode_literals
 
-from django.core.exceptions import ImproperlyConfigured
-
-try:
-    from django.utils.encoding import smart_bytes
-except ImportError:
-    from django.utils.encoding import smart_str as smart_bytes
-
-from django.utils.datastructures import SortedDict
-from django.utils import importlib
-from django.conf import settings
-
-try:
-    import cPickle as pickle
-except ImportError:
-    import pickle
-
-from collections import defaultdict
-import functools
 import re
 
-from redis import Redis
+
+from django.utils.datastructures import SortedDict
+from django.conf import settings
 from redis.exceptions import ConnectionError
-from redis.connection import DefaultParser
-from redis.connection import UnixDomainSocketConnection, Connection
 
-from ..util import CacheKey, load_class
 from ..hash_ring import HashRing
-from ..exceptions import ConnectionInterrumped
-from ..pool import get_or_create_connection_pool
-
+from ..exceptions import ConnectionInterrupted
 from .default import DefaultClient
 
 
@@ -47,8 +26,7 @@ class ShardClient(DefaultClient):
         self._ring = HashRing(self._server)
         self._serverdict = self.connect()
 
-    @property
-    def client(self):
+    def get_client(self, write=True):
         raise NotImplementedError
 
     def connect(self):
@@ -142,7 +120,7 @@ class ShardClient(DefaultClient):
         try:
             return client.exists(key)
         except ConnectionError:
-            raise ConnectionInterrumped(connection=client)
+            raise ConnectionInterrupted(connection=client)
 
     def delete(self, key, version=None, client=None):
         if client is None:
@@ -155,7 +133,7 @@ class ShardClient(DefaultClient):
         """
         Remove multiple keys at once.
         """
-        for key in map(lambda key: self.make_key(key, version=version), keys):
+        for key in [self.make_key(k, version=version) for k in keys]:
             client = self.get_server(key)
             self.delete(key, client=client)
 
@@ -183,19 +161,19 @@ class ShardClient(DefaultClient):
         return super(ShardClient, self)\
             .decr(key=key, delta=delta, version=version, client=client)
 
-
     def keys(self, search):
         pattern = self.make_key(search)
-
         keys = []
-        for server, connection in self._serverdict.items():
-            keys.extend(connection.keys(pattern))
-
         try:
-            encoding_map = map(lambda x:  x.decode('utf-8'), keys)
-            return list(map(lambda x: x.split(":", 2)[2], encoding_map))
+            for server, connection in self._serverdict.items():
+                keys.extend(connection.keys(pattern))
         except ConnectionError:
-            raise ConnectionInterrumped(connection=client)
+            # FIXME: technically all clients should be passed as `connection`.
+            client = self.get_server(pattern)
+            raise ConnectionInterrupted(connection=client)
+
+        decoded_keys = [k.decode('utf-8') for k in keys]
+        return [k.split(":", 2)[2] for k in decoded_keys]
 
     def delete_pattern(self, pattern, version=None):
         """

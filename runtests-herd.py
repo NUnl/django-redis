@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 
 import os, sys
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "test_sqlite_sharding")
-sys.path.insert(0, '..')
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "test_sqlite_herd")
+sys.path.insert(0, 'tests')
 
 from django.core.management import call_command
 

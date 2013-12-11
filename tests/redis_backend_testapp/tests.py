@@ -1,13 +1,15 @@
 # -*- coding: utf-8 -*-
 
-from __future__ import absolute_import, unicode_literals
+from __future__ import absolute_import, unicode_literals, print_function
 
-from django.test import TestCase
-from django.core.cache import cache, get_cache
+import sys
 import time
 import datetime
 
-import sys
+from django.test import TestCase
+from django.core.cache import cache, get_cache
+import redis_cache.cache
+
 if sys.version_info[0] < 3:
     text_type = unicode
     bytes_type = str
@@ -15,6 +17,7 @@ else:
     text_type = str
     bytes_type = bytes
     long = int
+
 
 class DjangoRedisCacheTests(TestCase):
     def setUp(self):
@@ -156,32 +159,36 @@ class DjangoRedisCacheTests(TestCase):
         self.assertEqual(res, {'c': 3})
 
     def test_incr(self):
-        self.cache.set("num", 1)
+        try:
+            self.cache.set("num", 1)
 
-        self.cache.incr("num")
-        res = self.cache.get("num")
-        self.assertEqual(res, 2)
+            self.cache.incr("num")
+            res = self.cache.get("num")
+            self.assertEqual(res, 2)
 
-        self.cache.incr("num", 10)
-        res = self.cache.get("num")
-        self.assertEqual(res, 12)
+            self.cache.incr("num", 10)
+            res = self.cache.get("num")
+            self.assertEqual(res, 12)
 
-        #max 64 bit signed int
-        self.cache.set("num", 9223372036854775807)
+            #max 64 bit signed int
+            self.cache.set("num", 9223372036854775807)
 
-        self.cache.incr("num")
-        res = self.cache.get("num")
-        self.assertEqual(res, 9223372036854775808)
+            self.cache.incr("num")
+            res = self.cache.get("num")
+            self.assertEqual(res, 9223372036854775808)
 
-        self.cache.incr("num", 2)
-        res = self.cache.get("num")
-        self.assertEqual(res, 9223372036854775810)
+            self.cache.incr("num", 2)
+            res = self.cache.get("num")
+            self.assertEqual(res, 9223372036854775810)
 
-        self.cache.set("num", long(3))
+            self.cache.set("num", long(3))
 
-        self.cache.incr("num", 2)
-        res = self.cache.get("num")
-        self.assertEqual(res, 5)
+            self.cache.incr("num", 2)
+            res = self.cache.get("num")
+            self.assertEqual(res, 5)
+
+        except NotImplementedError as e:
+            print(e)
 
     def test_get_set_bool(self):
         self.cache.set("bool", True)
@@ -197,36 +204,39 @@ class DjangoRedisCacheTests(TestCase):
         self.assertEqual(res, False)
 
     def test_decr(self):
-        self.cache.set("num", 20)
+        try:
+            self.cache.set("num", 20)
 
-        self.cache.decr("num")
-        res = self.cache.get("num")
-        self.assertEqual(res, 19)
+            self.cache.decr("num")
+            res = self.cache.get("num")
+            self.assertEqual(res, 19)
 
-        self.cache.decr("num", 20)
-        res = self.cache.get("num")
-        self.assertEqual(res, -1)
+            self.cache.decr("num", 20)
+            res = self.cache.get("num")
+            self.assertEqual(res, -1)
 
-        self.cache.decr("num", long(2))
-        res = self.cache.get("num")
-        self.assertEqual(res, -3)
+            self.cache.decr("num", long(2))
+            res = self.cache.get("num")
+            self.assertEqual(res, -3)
 
-        self.cache.set("num", long(20))
+            self.cache.set("num", long(20))
 
-        self.cache.decr("num")
-        res = self.cache.get("num")
-        self.assertEqual(res, 19)
+            self.cache.decr("num")
+            res = self.cache.get("num")
+            self.assertEqual(res, 19)
 
-        #max 64 bit signed int + 1
-        self.cache.set("num", 9223372036854775808)
+            #max 64 bit signed int + 1
+            self.cache.set("num", 9223372036854775808)
 
-        self.cache.decr("num")
-        res = self.cache.get("num")
-        self.assertEqual(res, 9223372036854775807)
+            self.cache.decr("num")
+            res = self.cache.get("num")
+            self.assertEqual(res, 9223372036854775807)
 
-        self.cache.decr("num", 2)
-        res = self.cache.get("num")
-        self.assertEqual(res, 9223372036854775805)
+            self.cache.decr("num", 2)
+            res = self.cache.get("num")
+            self.assertEqual(res, 9223372036854775805)
+        except NotImplementedError as e:
+            print(e)
 
     def test_version(self):
         self.cache.set("keytest", 2, version=2)
@@ -237,14 +247,17 @@ class DjangoRedisCacheTests(TestCase):
         self.assertEqual(res, 2)
 
     def test_incr_version(self):
-        self.cache.set("keytest", 2)
-        self.cache.incr_version("keytest")
+        try:
+            self.cache.set("keytest", 2)
+            self.cache.incr_version("keytest")
 
-        res = self.cache.get("keytest")
-        self.assertEqual(res, None)
+            res = self.cache.get("keytest")
+            self.assertEqual(res, None)
 
-        res = self.cache.get("keytest", version=2)
-        self.assertEqual(res, 2)
+            res = self.cache.get("keytest", version=2)
+            self.assertEqual(res, 2)
+        except NotImplementedError as e:
+            print(e)
 
     def test_delete_pattern(self):
         for key in ['foo-aa','foo-ab', 'foo-bb','foo-bc']:
@@ -267,6 +280,44 @@ class DjangoRedisCacheTests(TestCase):
             self.assertNotEqual(cache1, cache2)
             self.assertNotEqual(cache1.raw_client, cache2.raw_client)
             self.assertEqual(cache1.raw_client.connection_pool,
-                                cache2.raw_client.connection_pool)
+                             cache2.raw_client.connection_pool)
         except NotImplementedError:
             pass
+
+    def test_master_slave_switching(self):
+        try:
+            cache = get_cache('sample')
+            client = cache.client
+            client._server = ["foo", "bar",]
+            client._clients = ["Foo", "Bar"]
+
+            self.assertEqual(client.get_client(write=True), "Foo")
+            self.assertEqual(client.get_client(write=False), "Bar")
+        except NotImplementedError:
+            pass
+
+
+class DjangoOmitExceptionsTests(TestCase):
+    def setUp(self):
+        self._orig_setting = redis_cache.cache.DJANGO_REDIS_IGNORE_EXCEPTIONS
+        redis_cache.cache.DJANGO_REDIS_IGNORE_EXCEPTIONS = True
+        self.cache = get_cache('doesnotexist')
+
+    def tearDown(self):
+        redis_cache.cache.DJANGO_REDIS_IGNORE_EXCEPTIONS = self._orig_setting
+
+    def test_get(self):
+        self.assertIsNone(self.cache.get('key'))
+        self.assertEqual(self.cache.get('key', 'default'), 'default')
+        self.assertEqual(self.cache.get('key', default='default'), 'default')
+
+
+from django.contrib.sessions.backends.cache import SessionStore as CacheSession
+from django.contrib.sessions.tests import SessionTestsMixin
+
+
+class SessionTests(SessionTestsMixin, TestCase):
+    backend = CacheSession
+
+    def test_actual_expiry(self):
+        pass

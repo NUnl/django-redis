@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 class HashRing(object):
     nodes = []
 
-    def __init__(self, nodes=[], replicas=128):
+    def __init__(self, nodes=(), replicas=128):
         self.replicas = replicas
         self.ring = {}
         self.sorted_keys = []

@@ -1,6 +1,25 @@
 Changelog
 =========
 
+Version 3.4.0
+-------------
+
+- Fix exception name from ConnectionInterrumped to
+  ConnectionInterrupted mantaining a old exception class
+  for backward compatibility (thanks Łukasz Langa (@ambv))
+
+- Fix wrong behavior for "default" parameter on get method
+  when DJANGO_REDIS_IGNORE_EXCEPTIONS is True
+  (also thansk to Łukasz Langa (@ambv)).
+
+- Now added support for master-slave connection to default
+  client (it still experimental because is not tested in
+  production environments).
+
+- Merged SimpleFailoverClient experimental client (only for
+  experiment with it, not ready for use in production)
+
+
 Version 3.3.0
 -------------
 
